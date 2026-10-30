@@ -43,7 +43,7 @@ docker compose --project-name xboard-node-switch --file "$APP_DIR/bot/compose.ya
 printf '\n[3/3] 等待网页就绪…\n'
 ready=false
 for ((attempt = 0; attempt < 30; attempt++)); do
-  if curl --fail --silent --max-time 2 http://127.0.0.1:8080/api/session >/dev/null; then
+  if curl --fail --silent --max-time 2 http://127.0.0.1:20888/api/session >/dev/null; then
     ready=true
     break
   fi
@@ -51,10 +51,10 @@ for ((attempt = 0; attempt < 30; attempt++)); do
 done
 if [[ "$ready" != true ]]; then
   docker compose --project-name xboard-node-switch --file "$APP_DIR/bot/compose.yaml" logs --tail=50 bot
-  die '网页未就绪，请检查容器日志与 8080 端口是否被占用。源代码与数据卷已保留。'
+  die '网页未就绪，请检查容器日志与 20888 端口是否被占用。源代码与数据卷已保留。'
 fi
 
-printf '\n部署完成。\n网页地址：http://你的VPS_IP:8080\n反代目标：http://127.0.0.1:8080\n项目目录：%s\n\n' "$APP_DIR"
+printf '\n部署完成。\n网页地址：http://你的VPS_IP:20888\n反代目标：http://127.0.0.1:20888\n项目目录：%s\n\n' "$APP_DIR"
 printf '首次初始化码见下方启动日志。Token、白名单和面板地址均在网页填写。\n'
 docker compose --project-name xboard-node-switch --file "$APP_DIR/bot/compose.yaml" logs --tail=20 bot
 printf '\n提示：Xboard 那台服务器仍需安装 plugins/NodeAddressSwitch 插件。\n'

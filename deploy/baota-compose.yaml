@@ -5,7 +5,7 @@ services:
       context: /www/docker/xboard-node-bot/bot
     restart: unless-stopped
     ports:
-      - "8080:3000"
+      - "20888:3000"
     volumes:
       - node_switch_data:/app/data
     init: true
