@@ -1,0 +1,8 @@
+.env
+bot/.env
+_reference/
+node_modules/
+*.log
+bot/data/
+.qa/
+dist/

@@ -1,0 +1,21 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:3000"
+    volumes:
+      - node_switch_data:/app/data
+    init: true
+    stop_grace_period: 50s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  node_switch_data:
+    name: xboard_node_switch_data
