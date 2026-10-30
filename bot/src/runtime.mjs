@@ -28,13 +28,18 @@ export class BotRuntime {
   }
   async run(settings, signal) {
     const config = runtimeConfig(settings);
-    const { telegram, panel } = this.clientFactory(config, undefined, signal);
+    const { telegram } = this.clientFactory(config, undefined, signal);
+    const panel = (action, actor, body, panelId) => {
+      if (!config.panels.some(p => p.id === panelId)) throw new Error('面板不存在，请重新选择');
+      return this.clientFactory(runtimeConfig(settings, panelId), undefined, signal).panel(action, actor, body);
+    };
     this.status = { state: 'starting', message: '正在连接 Telegram', lastPollAt: null, username: null };
     while (!signal.aborted) {
       try {
         const me = await telegram('getMe', {});
         const webhook = await telegram('getWebhookInfo', {});
         if (webhook.url) throw new Error('该机器人已有 webhook，请更换专用机器人或先移除旧 webhook');
+        await telegram('setMyCommands', { commands: [{ command: 'start', description: '主菜单' }, { command: 'panels', description: '切换面板' }, { command: 'nodes', description: '当前面板节点' }, { command: 'cancel', description: '取消操作' }] });
         const initial = await telegram('getUpdates', { offset: -1, timeout: 0, allowed_updates: ['message', 'callback_query'] });
         let offset = initial.length ? initial.at(-1).update_id + 1 : 0;
         const bot = new Bot(config, telegram, panel);

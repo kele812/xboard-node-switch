@@ -2,13 +2,37 @@ import { randomBytes } from 'node:crypto';
 import { validHost } from './config.mjs';
 
 const button = (text, callback_data) => ({ text, callback_data });
+const nonce = () => randomBytes(6).toString('hex');
 export class Bot {
   constructor(config, telegram, panel, now = Date.now) {
     Object.assign(this, { config, telegram, panel, now });
+    this.panels = config.panels || [{ id: 'default', name: '默认面板', presets: config.presets || [] }];
     this.sessions = new Map();
   }
+  fresh(panelId) {
+    return { nonce: nonce(), panelId: this.panels.some(p => p.id === panelId) ? panelId : this.panels[0].id, nodes: [], selected: new Set(), query: '', page: 0, stage: 'home', expires: this.now() + 15 * 60_000 };
+  }
+  current(s) { return this.panels.find(p => p.id === s.panelId); }
+  filtered(s) { return s.nodes.filter(n => !s.query || n.name.toLowerCase().includes(s.query.toLowerCase())); }
   async send(chat, text, rows = []) {
     return this.telegram('sendMessage', { chat_id: chat, text, reply_markup: { inline_keyboard: rows } });
+  }
+  async menu(id, chat, note = '') {
+    const s = this.sessions.get(id);
+    return this.telegram('sendMessage', { chat_id: chat, text: `${note ? note + '\n\n' : ''}当前面板：${this.current(s).name}\n请选择菜单。切换节点只影响当前面板。`, reply_markup: { keyboard: [[{ text: '主菜单' }, { text: '切换面板' }], [{ text: '节点管理' }, { text: '搜索节点' }], [{ text: '取消操作' }]], resize_keyboard: true, is_persistent: true } });
+  }
+  async panelsMenu(id, chat) {
+    const s = this.sessions.get(id);
+    s.stage = 'panels'; s.nodes = []; s.selected.clear(); delete s.host;
+    return this.send(chat, `当前面板：${this.current(s).name}\n选择要操作的面板：`, [...this.panels.map(p => [button(`${p.id === s.panelId ? '✓ ' : ''}${p.name}`, `${s.nonce}:panel:${p.id}`)]), [button('返回主菜单', `${s.nonce}:home`)]]);
+  }
+  async loadNodes(id) {
+    const old = this.sessions.get(id);
+    const nodes = await this.panel('nodes', id, undefined, old.panelId);
+    if (!Array.isArray(nodes)) throw new Error('节点列表格式错误');
+    const s = this.fresh(old.panelId); s.nodes = nodes; s.stage = 'select';
+    this.sessions.set(id, s);
+    return s;
   }
   async handle(update) {
     const cb = update.callback_query;
@@ -20,96 +44,111 @@ export class Bot {
     }
     const id = String(actor.id), chat = message.chat.id;
     if (cb) await this.telegram('answerCallbackQuery', { callback_query_id: cb.id });
-    const text = message.text?.trim();
-    if (!cb && ['/start', '/nodes'].includes(text)) {
-      const nodes = await this.panel('nodes', id);
-      if (!Array.isArray(nodes)) throw new Error('节点列表格式错误');
-      this.sessions.set(id, { nonce: randomBytes(6).toString('hex'), nodes, selected: new Set(), page: 0, stage: 'select', expires: this.now() + 15 * 60_000 });
-      return this.showNodes(id, chat);
+    const text = cb ? undefined : message.text?.trim();
+    let s = this.sessions.get(id);
+    if (!cb && ['/start', '/menu', '主菜单', '/cancel', '取消操作', '/panels', '切换面板', '/nodes', '节点管理', '搜索节点'].includes(text)) {
+      const previous = s?.panelId;
+      s = this.fresh(previous); this.sessions.set(id, s);
+      if (['/panels', '切换面板'].includes(text)) return this.panelsMenu(id, chat);
+      if (['/nodes', '节点管理', '搜索节点'].includes(text)) {
+        try { s = await this.loadNodes(id); } catch (error) { return this.menu(id, chat, `读取失败：${error.message}`); }
+        if (text === '搜索节点') { s.stage = 'search'; return this.send(chat, `当前面板：${this.current(s).name}\n请输入节点名称关键词，例如 AA。`); }
+        return this.showNodes(id, chat);
+      }
+      return this.menu(id, chat, ['/cancel', '取消操作'].includes(text) ? '已取消当前操作。' : '');
     }
-    if (!cb && text === '/cancel') {
-      this.sessions.delete(id);
-      return this.send(chat, '已取消。发送 /nodes 重新选择。');
-    }
-    const s = this.sessions.get(id);
     if (!s || s.expires < this.now()) {
       this.sessions.delete(id);
-      return this.send(chat, '请发送 /nodes 开始，或重新加载已过期的会话。');
+      return this.send(chat, '会话已过期，请发送 /start 打开主菜单。');
     }
     if (!cb) {
-      if (s.stage !== 'input') return this.send(chat, '请通过按钮操作。发送 /cancel 取消。');
+      if (s.stage === 'search') {
+        if (!text || text.length > 80) return this.send(chat, '请输入 1–80 个字符的节点名称关键词。');
+        s.query = text; s.page = 0; s.selected.clear(); s.stage = 'select'; s.nonce = nonce();
+        return this.showNodes(id, chat);
+      }
+      if (s.stage !== 'input') return this.send(chat, '请使用菜单或按钮操作。发送 /start 返回主菜单。');
       if (!validHost(text)) return this.send(chat, '地址无效。请输入域名、IPv4 或 IPv6，不带协议、端口、路径。');
+      s.nonce = nonce();
       return this.preview(id, chat, text);
     }
-    const [nonce, action, value] = (cb.data ?? '').split(':');
-    // 每次渲染轮换 nonce，旧消息和重复点击不再具有操作权。
-    if (nonce !== s.nonce) return this.send(chat, '此按钮已过期，请使用最新消息中的按钮或发送 /nodes。');
-    s.nonce = randomBytes(6).toString('hex');
-    if (action === 'toggle' && s.stage === 'select') {
-      const nodeId = Number(value);
-      if (s.nodes.some(n => n.id === nodeId)) {
-        if (s.selected.has(nodeId)) s.selected.delete(nodeId);
-        else if (s.selected.size < 100) s.selected.add(nodeId);
-        else return this.showNodes(id, chat, '每次最多选择100个节点。');
+    const [token, action, value] = (cb.data ?? '').split(':');
+    if (token !== s.nonce) return this.send(chat, '此按钮已过期，请使用最新消息中的按钮或发送 /start。');
+    s.nonce = nonce();
+    if (action === 'home') { this.sessions.set(id, this.fresh(s.panelId)); return this.menu(id, chat); }
+    if (action === 'panels') return this.panelsMenu(id, chat);
+    if (action === 'panel' && s.stage === 'panels' && this.panels.some(p => p.id === value)) {
+      this.sessions.set(id, this.fresh(value)); return this.menu(id, chat, '已切换面板，原节点选择已清空。');
+    }
+    if (action === 'back' && ['address', 'confirm', 'input', 'search'].includes(s.stage)) { s.stage = 'select'; delete s.host; return this.showNodes(id, chat); }
+    if (s.stage === 'select') {
+      const filtered = this.filtered(s);
+      if (action === 'search') { s.stage = 'search'; return this.send(chat, `当前面板：${this.current(s).name}\n请输入节点名称关键词，例如 AA。搜索后会清空之前的选择。`, [[button('返回节点', `${s.nonce}:back`)]]); }
+      if (action === 'reset') { s.query = ''; s.page = 0; s.selected.clear(); return this.showNodes(id, chat); }
+      if (action === 'clear') { s.selected.clear(); return this.showNodes(id, chat); }
+      if (['all', 'allnodes'].includes(action)) {
+        const candidates = action === 'allnodes' ? s.nodes : filtered;
+        if (candidates.length > 100) return this.showNodes(id, chat, `共 ${candidates.length} 个节点，单次上限100个，请先用名称关键词缩小范围。`);
+        s.selected = new Set(candidates.map(n => n.id));
+        if (action === 'allnodes') { s.query = ''; s.page = 0; }
+        return this.showNodes(id, chat);
       }
-      return this.showNodes(id, chat);
+      if (action === 'toggle') {
+        const nodeId = Number(value);
+        if (filtered.some(n => n.id === nodeId)) {
+          if (s.selected.has(nodeId)) s.selected.delete(nodeId);
+          else if (s.selected.size < 100) s.selected.add(nodeId);
+          else return this.showNodes(id, chat, '每次最多选择100个节点。');
+        }
+        return this.showNodes(id, chat);
+      }
+      if (action === 'page') { s.page = Math.max(0, Math.min(Number(value) || 0, Math.ceil(filtered.length / 8) - 1)); return this.showNodes(id, chat); }
+      if (action === 'next') {
+        if (!s.selected.size) return this.showNodes(id, chat, '请至少选择一个节点。');
+        s.stage = 'address';
+        return this.send(chat, `当前面板：${this.current(s).name}\n已选择 ${s.selected.size} 个节点，请选择预设或手动输入：`, [
+          ...this.current(s).presets.map((p, i) => [button(p.name, `${s.nonce}:preset:${i}`)]),
+          [button('手动输入地址', `${s.nonce}:manual`)], [button('返回节点', `${s.nonce}:back`)], [button('返回主菜单', `${s.nonce}:home`)],
+        ]);
+      }
     }
-    if (action === 'page' && s.stage === 'select') {
-      s.page = Math.max(0, Math.min(Number(value) || 0, Math.ceil(s.nodes.length / 8) - 1));
-      return this.showNodes(id, chat);
-    }
-    if (action === 'next' && s.stage === 'select') {
-      if (!s.selected.size) return this.showNodes(id, chat, '请至少选择一个节点。');
-      s.stage = 'address';
-      return this.send(chat, `已选择 ${s.selected.size} 个节点，请选择预设或手动输入：`, [
-        ...this.config.presets.map((p, i) => [button(p.name, `${s.nonce}:preset:${i}`)]),
-        [button('手动输入地址', `${s.nonce}:manual`)],
-      ]);
-    }
-    if (action === 'manual' && s.stage === 'address') {
-      s.stage = 'input';
-      return this.send(chat, '请发送新服务器地址（域名或 IP）。发送 /cancel 取消。');
-    }
-    if (action === 'preset' && s.stage === 'address' && /^\d+$/.test(value ?? '') && this.config.presets[Number(value)]) {
-      return this.preview(id, chat, this.config.presets[Number(value)].host);
-    }
+    if (action === 'manual' && s.stage === 'address') { s.stage = 'input'; return this.send(chat, `当前面板：${this.current(s).name}\n请发送新服务器地址（域名或 IP）。`, [[button('返回节点', `${s.nonce}:back`)]]); }
+    if (action === 'preset' && s.stage === 'address' && /^\d+$/.test(value ?? '') && this.current(s).presets[Number(value)]) return this.preview(id, chat, this.current(s).presets[Number(value)].host);
     if (action === 'confirm' && s.stage === 'confirm') {
-      // 在请求前消费确认，写请求不自动重试；网络异常时提示核查实际结果。
       s.stage = 'done';
       const nodes = s.nodes.filter(n => s.selected.has(n.id)).map(n => ({ id: n.id, host: n.host }));
+      let note;
       try {
-        const result = await this.panel('switch', id, { host: s.host, nodes });
-        this.sessions.delete(id);
-        return this.send(chat, `已完成：${result.changes.length} 个节点的服务器地址改为 ${s.host}。\n发送 /nodes 查看最新地址。`);
-      } catch (error) {
-        this.sessions.delete(id);
-        return this.send(chat, `未能确认执行结果：${error.message}\n请发送 /nodes 核查实际地址后再操作。`);
-      }
+        const result = await this.panel('switch', id, { host: s.host, nodes }, s.panelId);
+        note = `已完成：${this.current(s).name} 的 ${result.changes.length} 个节点服务器地址已改为 ${s.host}。`;
+      } catch (error) { note = `未能确认执行结果：${error.message}\n请先通过“节点管理”核查实际地址，再进行下一步。`; }
+      this.sessions.set(id, this.fresh(s.panelId));
+      return this.menu(id, chat, note);
     }
-    return this.send(chat, '操作已失效，请发送 /nodes 重新开始。');
+    return this.send(chat, '操作已失效，请发送 /start 重新开始。');
   }
   async showNodes(id, chat, note = '') {
-    const s = this.sessions.get(id);
-    const pages = Math.max(1, Math.ceil(s.nodes.length / 8));
-    const rows = s.nodes.slice(s.page * 8, s.page * 8 + 8).map(n => [button(`${s.selected.has(n.id) ? '☑' : '☐'} ${n.id} ${String(n.name).slice(0, 28)} · ${n.host}`.slice(0, 100), `${s.nonce}:toggle:${n.id}`)]);
+    const s = this.sessions.get(id), nodes = this.filtered(s);
+    const pages = Math.max(1, Math.ceil(nodes.length / 8));
+    const rows = nodes.slice(s.page * 8, s.page * 8 + 8).map(n => [button(`${s.selected.has(n.id) ? '☑' : '☐'} ${n.id} ${String(n.name).slice(0, 28)} · ${n.host}`.slice(0, 100), `${s.nonce}:toggle:${n.id}`)]);
     rows.push([button('上一页', `${s.nonce}:page:${Math.max(0, s.page - 1)}`), button('下一页', `${s.nonce}:page:${Math.min(pages - 1, s.page + 1)}`)]);
-    rows.push([button(`下一步（已选${s.selected.size}个）`, `${s.nonce}:next`)]);
-    return this.send(chat, `${note ? note + '\n' : ''}选择要修改的节点（可跨页多选），第 ${s.page + 1}/${pages} 页。\n发送 /cancel 取消。`, rows);
+    rows.push([button(`${s.query ? '全选搜索结果' : '全选全部节点'}（${nodes.length}个）`, `${s.nonce}:all`), button('清空选择', `${s.nonce}:clear`)]);
+    rows.push([button('搜索节点', `${s.nonce}:search`), ...(s.query ? [button('显示全部节点', `${s.nonce}:reset`)] : [])]);
+    if (s.query) rows.push([button(`全选全部节点（${s.nodes.length}个）`, `${s.nonce}:allnodes`)]);
+    rows.push([button(`选择目标地址（已选${s.selected.size}个）`, `${s.nonce}:next`)]);
+    rows.push([button('切换面板', `${s.nonce}:panels`), button('返回主菜单', `${s.nonce}:home`)]);
+    return this.send(chat, `${note ? note + '\n\n' : ''}当前面板：${this.current(s).name}\n${s.query ? `名称包含“${s.query}”：${nodes.length} 个匹配节点` : `全部节点：${nodes.length} 个`}\n已选 ${s.selected.size} 个 · 第 ${s.page + 1}/${pages} 页\n可一键全选，或逐个勾选/取消。`, rows);
   }
   async preview(id, chat, host) {
-    const s = this.sessions.get(id);
-    s.host = host;
-    s.stage = 'confirm';
+    const s = this.sessions.get(id); s.host = host; s.stage = 'confirm';
     const selected = s.nodes.filter(n => s.selected.has(n.id));
-    const header = `即将修改 ${selected.length} 个节点，仅更改服务器地址：\n新地址：${host}\n`;
-    // 分段发送全部原地址，避免 Telegram 4096 字符限制。
-    let chunk = header;
+    let chunk = `当前面板：${this.current(s).name}\n即将修改 ${selected.length} 个节点，仅更改服务器地址：\n新地址：${host}\n`;
     for (const n of selected) {
       const line = `\n#${n.id} ${String(n.name).slice(0, 80)}\n${n.host} → ${host}\n`;
       if (chunk.length + line.length > 3500) { await this.send(chat, chunk); chunk = ''; }
       chunk += line;
     }
     if (chunk) await this.send(chat, chunk);
-    return this.send(chat, '确认执行？发送 /cancel 可取消。', [[button('确认替换', `${s.nonce}:confirm`)]]);
+    return this.send(chat, `确认替换“${this.current(s).name}”的 ${selected.length} 个节点？`, [[button('确认替换', `${s.nonce}:confirm`)], [button('返回节点', `${s.nonce}:back`), button('返回主菜单', `${s.nonce}:home`)]]);
   }
 }

@@ -14,14 +14,15 @@
     <section class="auth-intro">
       <div class="brand"><span class="brand-mark">X</span> NODE SWITCH</div>
       <div><p class="eyebrow">XBOARD · TELEGRAM</p><h1>让地址切换，<br>更从容一点。</h1><p class="muted">在一个地方配置连接、选择节点，<br>通过网页或 Telegram 完成切换。</p></div>
-      <span class="muted small">自托管节点管理工具 · v1.1</span>
+      <span class="muted small">自托管节点管理工具 · v1.2</span>
     </section>
     <section class="auth-form-wrap">
       <form id="auth-form" class="auth-form">
         <p class="eyebrow">管理控制台</p><h2 id="auth-title">管理员登录</h2>
-        <p id="auth-description" class="muted">输入管理员密码，进入节点管理。</p>
+        <p id="auth-description" class="muted">输入账号和密码，进入节点管理。</p>
         <label id="setup-code-label" hidden>首次初始化码<input id="setup-code" autocomplete="off" placeholder="从宝塔容器日志中复制" maxlength="64"></label>
-        <label>管理员密码<input id="auth-password" type="password" autocomplete="current-password" required maxlength="128" placeholder="输入管理员密码"></label>
+        <label>管理员账号<input id="auth-username" autocomplete="username" required maxlength="64" value="admin" placeholder="输入管理员账号"></label>
+        <label>管理员密码<input id="auth-password" type="password" autocomplete="current-password" required minlength="1" maxlength="128" placeholder="输入管理员密码"></label>
         <label id="repeat-label" hidden>确认密码<input id="repeat-password" type="password" autocomplete="new-password" maxlength="128" placeholder="再次输入密码"></label>
         <p id="auth-error" class="inline-error" role="alert" hidden></p>
         <button id="auth-submit" class="primary wide" type="submit">登录控制台</button>
@@ -46,10 +47,11 @@
         <section id="view-nodes" class="view">
           <div class="page-heading"><div><p class="eyebrow">NODE MANAGEMENT</p><h1>节点管理</h1><p class="muted">选择节点，为它们切换到新的服务器地址。</p></div><button id="refresh-nodes" class="secondary">刷新节点 ↻</button></div>
           <div id="config-notice" class="notice" hidden><span>先完成 Xboard 与 Telegram 连接配置，再加载节点。</span><button id="go-settings" class="text-button">前往配置 →</button></div>
+          <div class="panel-picker-wrap"><label for="panel-picker">当前面板</label><select id="panel-picker" aria-label="当前面板"></select><span class="muted small">每次只操作一个面板，切换后清空已选节点。</span></div>
           <div class="node-layout">
             <section class="panel node-panel" aria-label="节点列表">
               <div class="panel-toolbar"><div class="panel-title">全部节点 <span id="node-total" class="count">0</span></div><input id="search" type="search" placeholder="搜索名称、地址或 ID" aria-label="搜索节点"></div>
-              <div class="selection-strip"><span id="selection-label">已选择 0 个节点</span><button id="clear-selection" class="text-button" disabled>清空选择</button></div>
+              <div class="selection-strip"><span id="selection-label">已选择 0 个节点</span><div><button id="select-filtered" class="text-button" disabled>全选全部节点</button><button id="clear-selection" class="text-button" disabled>清空选择</button></div></div>
               <div class="table-scroll"><table><thead><tr><th class="check-cell"><input id="select-page" type="checkbox" aria-label="选择当前页节点"></th><th>节点名称</th><th>当前服务器地址</th><th>协议</th></tr></thead><tbody id="node-rows"></tbody></table></div>
               <div id="node-empty" class="empty"><span class="empty-symbol">▤</span><h3>等待加载节点</h3><p>配置连接后，点击右上方“刷新节点”。</p></div>
               <footer class="table-footer"><span id="page-info">暂无节点</span><div><button id="prev-page" class="small-button" aria-label="上一页">←</button><button id="next-page" class="small-button" aria-label="下一页">→</button></div></footer>
@@ -68,18 +70,13 @@
         <section id="view-settings" class="view" hidden>
           <div class="page-heading"><div><p class="eyebrow">CONNECTION SETTINGS</p><h1>连接配置</h1><p class="muted">在这里配置面板、机器人和备用地址，保存后立即生效。</p></div></div>
           <form id="settings-form">
-            <section class="panel settings-section"><div class="section-description"><span class="step">01</span><h2>Xboard 面板</h2><p class="muted small">请先在 Xboard 安装配套插件，并使用相同的接口密钥。</p></div><div class="form-fields">
-              <label>面板地址<input name="url" type="url" placeholder="https://panel.example.com" required><span class="field-hint">填写 HTTPS 根地址，不带后台管理路径。</span></label>
-              <label>插件接口密钥<div class="input-action"><input name="key" type="password" autocomplete="new-password" placeholder="至少 32 字符，须与插件端一致"><button id="generate-key" class="secondary" type="button">生成</button></div><span id="key-hint" class="field-hint">生成后可复制到 Xboard 插件配置；保存后不再回显。</span></label>
-              <div id="generated-key-wrap" class="generated-key" hidden><label>本次生成的密钥<input id="generated-key" readonly autocomplete="off"></label><button id="copy-key" class="text-button" type="button">复制密钥</button></div>
-            </div></section>
-            <section class="panel settings-section"><div class="section-description"><span class="step">02</span><h2>Telegram 与权限</h2><p class="muted small">TG 仅接受白名单用户私聊操作。网页使用下方指定的用户 ID 请求插件。</p></div><div class="form-fields">
+            <section class="panel settings-section"><div class="section-description"><span class="step">01</span><h2>Telegram 与权限</h2><p class="muted small">一个机器人管理多个面板。TG 仅接受白名单用户私聊操作，菜单可切换当前面板。</p></div><div class="form-fields">
               <label>机器人 Token<input name="token" type="password" autocomplete="new-password" placeholder="从 BotFather 获取"><span id="token-hint" class="field-hint">使用独立机器人，避免与其他服务冲突。</span></label>
               <label>允许操作的用户 ID<input name="allowedUserIds" placeholder="123456789,987654321" required><span class="field-hint">填写数字 ID，用英文逗号分隔，与插件端白名单一致。</span></label>
-              <label>网页操作用户 ID<input name="webUserId" placeholder="留空则使用白名单第一个 ID"><span class="field-hint">需在两端白名单中，面板日志将记录此 ID。</span></label>
               <label class="checkbox-label"><input name="botEnabled" type="checkbox">启用 Telegram 机器人<span class="field-hint">关闭时仍可使用网页管理节点。</span></label>
             </div></section>
-            <section class="panel settings-section"><div class="section-description"><span class="step">03</span><h2>预设地址</h2><p class="muted small">预设在网页和 TG 中同步使用，最多保存 20 个。</p></div><div class="form-fields"><div id="preset-rows"></div><button id="add-preset" class="secondary" type="button">＋ 添加预设</button></div></section>
+            <div class="panels-editor-heading"><div><h2>Xboard 面板</h2><p class="muted small">每个面板独立配置地址、密钥和预设地址。请在各面板安装配套插件。</p></div><button id="add-panel" class="secondary" type="button">＋ 添加面板</button></div>
+            <div id="panel-editors"></div>
             <div id="test-results" class="test-results" role="status" hidden></div>
             <div class="form-actions"><span class="muted small">敏感字段留空保留已保存的值。</span><div><button id="test-connections" class="secondary" type="button">测试连接</button><button id="save-config" class="primary" type="submit">保存配置</button></div></div>
           </form>
@@ -89,7 +86,7 @@
           <div class="page-heading"><div><p class="eyebrow">STATUS & ACTIVITY</p><h1>运行与记录</h1><p class="muted">查看机器人运行状态和最近的网页操作。</p></div><button id="refresh-activity" class="secondary">刷新状态 ↻</button></div>
           <section class="panel status-panel"><div><span class="eyebrow">TELEGRAM BOT</span><h2 id="runtime-title">尚未配置</h2><p id="runtime-message" class="muted">请先填写连接配置。</p></div><dl><div><dt>机器人</dt><dd id="runtime-username">—</dd></div><div><dt>最近轮询</dt><dd id="runtime-poll">—</dd></div><div><dt>网页操作身份</dt><dd id="runtime-actor">—</dd></div></dl></section>
           <section class="panel activity-panel"><div class="panel-toolbar"><h2>网页操作记录</h2><span class="muted small">最近 100 条 · TG 操作记录在 Xboard 日志中</span></div><div id="audit-list"></div></section>
-          <form id="password-form" class="panel password-panel"><div><h2>修改管理员密码</h2><p class="muted small">修改后，所有已登录会话将失效。</p></div><label>当前密码<input id="current-password" type="password" autocomplete="current-password" required maxlength="128"></label><label>新密码<input id="new-password" type="password" autocomplete="new-password" required minlength="12" maxlength="128" placeholder="至少 12 个字符"></label><button class="secondary" type="submit">更新密码</button></form>
+          <form id="password-form" class="panel password-panel"><div><h2>管理员账号与密码</h2><p class="muted small">修改后需重新登录。密码不限制复杂度。</p></div><label>管理员账号<input id="new-username" autocomplete="username" required maxlength="64"></label><label>当前密码<input id="current-password" type="password" autocomplete="current-password" required maxlength="128"></label><label>新密码<input id="new-password" type="password" autocomplete="new-password" minlength="1" maxlength="128" placeholder="留空保留原密码"></label><button class="secondary" type="submit">更新账号</button></form>
         </section>
       </div>
       <footer class="workspace-footer">NODE SWITCH <span>网页管理 · Telegram 协同</span></footer>
