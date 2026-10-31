@@ -1,6 +1,7 @@
 'use strict';
 const $ = selector => document.querySelector(selector);
-const state = { csrf: '', setup: false, config: null, nodes: [], selected: new Set(), page: 0, pageSize: 20, loaded: false, loading: false, preview: null, confirming: false, view: 'nodes' };
+const state = { csrf: '', setup: false, config: null, nodes: [], selected: new Set(), page: 0, pageSize: 20, loaded: false, loading: false, preview: null, previewing: false, confirming: false, view: 'nodes' };
+const visibilityText = value => value === true ? '开启（订阅显示）' : value === false ? '关闭（订阅隐藏）' : '状态未知';
 const time = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -182,7 +183,12 @@ function renderNodes() {
     checkCell.append(check);
     const name = element('td'); name.append(element('span', 'node-name', node.name), element('span', 'node-id', `#${node.id}`));
     const host = element('td', 'host-text', node.host), protocol = element('td'); protocol.append(element('span', 'protocol', node.type));
-    row.append(checkCell, name, host, protocol); rows.append(row);
+    const status = element('td'), toggle = element('button', `visibility-switch ${node.show === true ? 'on' : 'off'}`, typeof node.show === 'boolean' ? node.show ? '开启' : '关闭' : '需升级插件');
+    toggle.type = 'button'; toggle.disabled = typeof node.show !== 'boolean' || state.previewing || state.confirming;
+    toggle.setAttribute('aria-label', typeof node.show === 'boolean' ? `${node.name}：${visibilityText(node.show)}，点击${node.show ? '关闭' : '开启'}` : `${node.name}：状态未知，请升级插件`);
+    if (typeof node.show === 'boolean') { toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', String(node.show)); }
+    toggle.addEventListener('click', () => showPreview({ kind: 'visibility', ids: [node.id], show: !node.show }).catch(error => toast(error.message, true)));
+    status.append(toggle); row.append(checkCell, name, host, protocol, status); rows.append(row);
   }
   $('#node-total').textContent = state.nodes.length;
   $('#selected-count').textContent = state.selected.size;
@@ -190,7 +196,12 @@ function renderNodes() {
   $('#clear-selection').disabled = !state.selected.size;
   $('#select-filtered').disabled = !filtered.length || state.loading;
   $('#select-filtered').textContent = $('#search').value.trim() ? `全选搜索结果（${filtered.length}）` : `全选全部节点（${filtered.length}）`;
-  $('#preview-switch').disabled = !state.selected.size || state.loading;
+  $('#preview-switch').disabled = !state.selected.size || state.loading || state.previewing;
+  const selectedNodes = state.nodes.filter(n => state.selected.has(n.id));
+  const visibilityReady = selectedNodes.length > 0 && selectedNodes.every(n => typeof n.show === 'boolean') && !state.loading && !state.previewing;
+  $('#batch-show').disabled = !visibilityReady;
+  $('#batch-hide').disabled = !visibilityReady;
+  $('#visibility-notice').hidden = !state.loaded || !state.nodes.some(n => typeof n.show !== 'boolean');
   $('#node-empty').hidden = filtered.length > 0;
   if (!filtered.length) {
     $('#node-empty h3').textContent = state.loading ? '正在加载节点…' : state.loaded ? (state.nodes.length ? '没有匹配的节点' : '面板暂无节点') : '等待加载节点';
@@ -232,12 +243,13 @@ async function refreshActivity() {
   const records = await api('audit'), list = $('#audit-list'); list.replaceChildren();
   if (!records.length) list.append(element('div', 'audit-empty', '暂无网页切换记录。完成一次切换后，记录将显示在这里。'));
   for (const record of records) {
-    const details = element('details', 'audit-entry'), summary = element('summary', '', `${record.panelName || '默认面板'} · ${record.changes.length} 个节点 → ${record.host}`);
+    const visibility = record.kind === 'visibility';
+    const details = element('details', 'audit-entry'), summary = element('summary', '', `${record.panelName || '默认面板'} · ${record.changes.length} 个节点 → ${visibility ? visibilityText(record.show) : record.host}`);
     summary.append(element('span', `audit-state ${record.state}`, { success: '已完成', unknown: '结果待核查', pending: '已提交 · 请核查' }[record.state] || record.state));
     const meta = element('div', 'audit-meta'); meta.append(element('span', '', time(record.at)), element('span', '', `操作身份 ${record.actor}`));
     details.append(summary, meta);
     if (record.message) details.append(element('p', 'small error-text', record.message));
-    for (const change of record.changes) details.append(element('div', 'audit-change', `#${change.id} ${change.name}：${change.before} → ${change.after}`));
+    for (const change of record.changes) details.append(element('div', 'audit-change', `#${change.id} ${change.name}：${visibility ? visibilityText(change.before) : change.before} → ${visibility ? visibilityText(change.after) : change.after}`));
     list.append(details);
   }
 }
@@ -304,30 +316,37 @@ on('#test-connections', 'click', async () => {
     $('#test-results').hidden = false;
   } finally { $('#test-connections').disabled = false; $('#save-config').disabled = false; }
 });
-on('#preview-switch', 'click', async () => {
-  $('#preview-switch').disabled = true;
+async function showPreview(data) {
+  if (state.previewing || state.confirming) return;
+  state.previewing = true; renderNodes();
   try {
-    const preview = await api('preview', { ids: [...state.selected], host: $('#target-host').value.trim() }); state.preview = preview;
-    $('#confirm-title').textContent = `确认切换 · ${preview.panelName}`;
-    $('#confirm-host').textContent = preview.host; $('#confirm-list').replaceChildren();
+    const preview = await api('preview', data); state.preview = preview;
+    const visibility = preview.kind === 'visibility';
+    const action = visibility ? preview.show ? '开启' : '关闭' : '替换';
+    $('#confirm-title').textContent = `确认${visibility ? action + '节点' : '切换地址'} · ${preview.panelName}`;
+    $('#confirm-target-label').textContent = visibility ? '目标订阅状态' : '新服务器地址';
+    $('#confirm-host').textContent = visibility ? visibilityText(preview.show) : preview.host; $('#confirm-list').replaceChildren();
     for (const node of preview.nodes) {
-      const row = element('div', 'confirm-node'); row.append(element('strong', '', `#${node.id} ${node.name}`), element('p', '', `${node.host} → ${preview.host}`)); $('#confirm-list').append(row);
+      const row = element('div', 'confirm-node'); row.append(element('strong', '', `#${node.id} ${node.name}`), element('p', '', visibility ? `${visibilityText(node.show)} → ${visibilityText(preview.show)}` : `${node.host} → ${preview.host}`)); $('#confirm-list').append(row);
     }
-    $('#confirm-switch').textContent = `确认替换 ${preview.nodes.length} 个节点`; $('#confirm-dialog').showModal();
-  } finally { $('#preview-switch').disabled = !state.selected.size; }
-});
+    $('#confirm-switch').textContent = `确认${action} ${preview.nodes.length} 个节点`; $('#confirm-dialog').showModal();
+  } finally { state.previewing = false; renderNodes(); }
+}
+on('#preview-switch', 'click', () => showPreview({ kind: 'address', ids: [...state.selected], host: $('#target-host').value.trim() }));
+on('#batch-show', 'click', () => showPreview({ kind: 'visibility', ids: [...state.selected], show: true }));
+on('#batch-hide', 'click', () => showPreview({ kind: 'visibility', ids: [...state.selected], show: false }));
 on('#cancel-confirm', 'click', () => { if (!state.confirming) { state.preview = null; $('#confirm-dialog').close(); } });
 $('#confirm-dialog').addEventListener('cancel', e => { if (state.confirming) e.preventDefault(); else state.preview = null; });
 on('#confirm-switch', 'click', async () => {
   if (!state.preview || state.confirming) return;
   state.confirming = true; $('#confirm-switch').disabled = true; $('#cancel-confirm').disabled = true;
-  const token = state.preview.token; state.preview = null;
+  const { token, kind, show } = state.preview; state.preview = null;
   try {
     const result = await api('switch', { token });
-    toast(`已完成：${result.changes.length} 个节点的服务器地址已更新。`);
+    toast(kind === 'visibility' ? `已完成：${result.changes.length} 个节点已${show ? '开启' : '关闭'}。客户端更新订阅后可看到变化。` : `已完成：${result.changes.length} 个节点的服务器地址已更新。`);
     await loadNodes();
-  } catch (error) { state.nodes = []; state.selected.clear(); state.loaded = false; renderNodes(); toast(`${error.message} 请刷新节点核查当前地址。`, true); }
-  finally { state.confirming = false; $('#confirm-switch').disabled = false; $('#cancel-confirm').disabled = false; $('#confirm-dialog').close(); }
+  } catch (error) { state.nodes = []; state.selected.clear(); state.loaded = false; renderNodes(); toast(`${error.message} 请刷新节点核查当前状态。`, true); }
+  finally { state.confirming = false; $('#confirm-switch').disabled = false; $('#cancel-confirm').disabled = false; $('#confirm-dialog').close(); renderNodes(); }
 });
 on('#refresh-activity', 'click', refreshActivity);
 on('#password-form', 'submit', async e => {

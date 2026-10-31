@@ -14,7 +14,7 @@
     <section class="auth-intro">
       <div class="brand"><span class="brand-mark">X</span> NODE SWITCH</div>
       <div><p class="eyebrow">XBOARD · TELEGRAM</p><h1>让地址切换，<br>更从容一点。</h1><p class="muted">在一个地方配置连接、选择节点，<br>通过网页或 Telegram 完成切换。</p></div>
-      <span class="muted small">自托管节点管理工具 · v1.2</span>
+      <span class="muted small">自托管节点管理工具 · v1.3</span>
     </section>
     <section class="auth-form-wrap">
       <form id="auth-form" class="auth-form">
@@ -45,14 +45,15 @@
       <header class="topbar"><span>工作区 <span class="separator">/</span> <span id="breadcrumb">节点管理</span></span><div><span class="admin-badge">管理员</span> <button id="logout-mobile" class="text-button">退出</button></div></header>
       <div class="page-wrap">
         <section id="view-nodes" class="view">
-          <div class="page-heading"><div><p class="eyebrow">NODE MANAGEMENT</p><h1>节点管理</h1><p class="muted">选择节点，为它们切换到新的服务器地址。</p></div><button id="refresh-nodes" class="secondary">刷新节点 ↻</button></div>
+          <div class="page-heading"><div><p class="eyebrow">NODE MANAGEMENT</p><h1>节点管理</h1><p class="muted">选择节点，批量修改地址或开启、关闭订阅显示。</p></div><button id="refresh-nodes" class="secondary">刷新节点 ↻</button></div>
           <div id="config-notice" class="notice" hidden><span>先完成 Xboard 与 Telegram 连接配置，再加载节点。</span><button id="go-settings" class="text-button">前往配置 →</button></div>
+          <div id="visibility-notice" class="notice" hidden>当前面板插件尚未提供显隐状态。请升级 Xboard 端插件至 1.1.0，再刷新节点使用开关。</div>
           <div class="panel-picker-wrap"><label for="panel-picker">当前面板</label><select id="panel-picker" aria-label="当前面板"></select><span class="muted small">每次只操作一个面板，切换后清空已选节点。</span></div>
           <div class="node-layout">
             <section class="panel node-panel" aria-label="节点列表">
               <div class="panel-toolbar"><div class="panel-title">全部节点 <span id="node-total" class="count">0</span></div><input id="search" type="search" placeholder="搜索名称、地址或 ID" aria-label="搜索节点"></div>
               <div class="selection-strip"><span id="selection-label">已选择 0 个节点</span><div><button id="select-filtered" class="text-button" disabled>全选全部节点</button><button id="clear-selection" class="text-button" disabled>清空选择</button></div></div>
-              <div class="table-scroll"><table><thead><tr><th class="check-cell"><input id="select-page" type="checkbox" aria-label="选择当前页节点"></th><th>节点名称</th><th>当前服务器地址</th><th>协议</th></tr></thead><tbody id="node-rows"></tbody></table></div>
+              <div class="table-scroll"><table><thead><tr><th class="check-cell"><input id="select-page" type="checkbox" aria-label="选择当前页节点"></th><th>节点名称</th><th>当前服务器地址</th><th>协议</th><th>订阅开关</th></tr></thead><tbody id="node-rows"></tbody></table></div>
               <div id="node-empty" class="empty"><span class="empty-symbol">▤</span><h3>等待加载节点</h3><p>配置连接后，点击右上方“刷新节点”。</p></div>
               <footer class="table-footer"><span id="page-info">暂无节点</span><div><button id="prev-page" class="small-button" aria-label="上一页">←</button><button id="next-page" class="small-button" aria-label="下一页">→</button></div></footer>
             </section>
@@ -63,6 +64,7 @@
               <div class="switch-summary"><span>本次选中</span><strong><span id="selected-count">0</span> <small>个节点</small></strong></div>
               <button id="preview-switch" class="primary wide" disabled>预览修改 →</button>
               <p class="field-hint">确认后仅修改服务器地址，保留端口、TLS 与 SNI 配置。</p>
+              <div class="visibility-actions"><h3>节点开关</h3><p class="field-hint">开启后订阅中显示，关闭后订阅中隐藏。</p><div><button id="batch-show" class="secondary" disabled>开启所选</button><button id="batch-hide" class="secondary" disabled>关闭所选</button></div><p class="field-hint">客户端更新订阅后可看到变化。</p></div>
             </aside>
           </div>
         </section>
@@ -93,7 +95,7 @@
     </main>
   </div>
 
-  <dialog id="confirm-dialog" aria-labelledby="confirm-title"><div class="dialog-head"><p class="eyebrow">REVIEW CHANGES</p><h2 id="confirm-title">确认切换地址</h2><p class="muted">请核对以下节点。确认后将一次提交全部修改。</p></div><div class="confirm-target"><span>新服务器地址</span><strong id="confirm-host"></strong></div><div id="confirm-list"></div><div class="dialog-actions"><button id="cancel-confirm" class="secondary">返回修改</button><button id="confirm-switch" class="primary">确认替换</button></div></dialog>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title"><div class="dialog-head"><p class="eyebrow">REVIEW CHANGES</p><h2 id="confirm-title">确认切换地址</h2><p class="muted">请核对以下节点。确认后将一次提交全部修改。</p></div><div class="confirm-target"><span id="confirm-target-label">新服务器地址</span><strong id="confirm-host"></strong></div><div id="confirm-list"></div><div class="dialog-actions"><button id="cancel-confirm" class="secondary">返回修改</button><button id="confirm-switch" class="primary">确认替换</button></div></dialog>
   <div id="toast" class="toast" role="status" hidden><span id="toast-message"></span><button id="dismiss-toast" aria-label="关闭提示">×</button></div>
 </body>
 </html>

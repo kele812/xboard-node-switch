@@ -19,7 +19,7 @@ export class Bot {
   }
   async menu(id, chat, note = '') {
     const s = this.sessions.get(id);
-    return this.telegram('sendMessage', { chat_id: chat, text: `${note ? note + '\n\n' : ''}当前面板：${this.current(s).name}\n请选择菜单。切换节点只影响当前面板。`, reply_markup: { keyboard: [[{ text: '主菜单' }, { text: '切换面板' }], [{ text: '节点管理' }, { text: '搜索节点' }], [{ text: '取消操作' }]], resize_keyboard: true, is_persistent: true } });
+    return this.telegram('sendMessage', { chat_id: chat, text: `${note ? note + '\n\n' : ''}当前面板：${this.current(s).name}\n请选择菜单。开启＝订阅显示，关闭＝订阅隐藏。`, reply_markup: { keyboard: [[{ text: '主菜单' }, { text: '切换面板' }], [{ text: '节点管理' }, { text: '搜索节点' }], [{ text: '节点开关' }, { text: '取消操作' }]], resize_keyboard: true, is_persistent: true } });
   }
   async panelsMenu(id, chat) {
     const s = this.sessions.get(id);
@@ -46,11 +46,11 @@ export class Bot {
     if (cb) await this.telegram('answerCallbackQuery', { callback_query_id: cb.id });
     const text = cb ? undefined : message.text?.trim();
     let s = this.sessions.get(id);
-    if (!cb && ['/start', '/menu', '主菜单', '/cancel', '取消操作', '/panels', '切换面板', '/nodes', '节点管理', '搜索节点'].includes(text)) {
+    if (!cb && ['/start', '/menu', '主菜单', '/cancel', '取消操作', '/panels', '切换面板', '/nodes', '/visibility', '节点管理', '搜索节点', '节点开关'].includes(text)) {
       const previous = s?.panelId;
       s = this.fresh(previous); this.sessions.set(id, s);
       if (['/panels', '切换面板'].includes(text)) return this.panelsMenu(id, chat);
-      if (['/nodes', '节点管理', '搜索节点'].includes(text)) {
+      if (['/nodes', '/visibility', '节点管理', '搜索节点', '节点开关'].includes(text)) {
         try { s = await this.loadNodes(id); } catch (error) { return this.menu(id, chat, `读取失败：${error.message}`); }
         if (text === '搜索节点') { s.stage = 'search'; return this.send(chat, `当前面板：${this.current(s).name}\n请输入节点名称关键词，例如 AA。`); }
         return this.showNodes(id, chat);
@@ -80,7 +80,7 @@ export class Bot {
     if (action === 'panel' && s.stage === 'panels' && this.panels.some(p => p.id === value)) {
       this.sessions.set(id, this.fresh(value)); return this.menu(id, chat, '已切换面板，原节点选择已清空。');
     }
-    if (action === 'back' && ['address', 'confirm', 'input', 'search'].includes(s.stage)) { s.stage = 'select'; delete s.host; return this.showNodes(id, chat); }
+    if (action === 'back' && ['address', 'confirm', 'input', 'search'].includes(s.stage)) { s.stage = 'select'; delete s.host; delete s.kind; delete s.show; return this.showNodes(id, chat); }
     if (s.stage === 'select') {
       const filtered = this.filtered(s);
       if (action === 'search') { s.stage = 'search'; return this.send(chat, `当前面板：${this.current(s).name}\n请输入节点名称关键词，例如 AA。搜索后会清空之前的选择。`, [[button('返回节点', `${s.nonce}:back`)]]); }
@@ -103,6 +103,11 @@ export class Bot {
         return this.showNodes(id, chat);
       }
       if (action === 'page') { s.page = Math.max(0, Math.min(Number(value) || 0, Math.ceil(filtered.length / 8) - 1)); return this.showNodes(id, chat); }
+      if (['show', 'hide'].includes(action)) {
+        if (!s.selected.size) return this.showNodes(id, chat, '请至少选择一个节点。');
+        if (s.nodes.filter(n => s.selected.has(n.id)).some(n => typeof n.show !== 'boolean')) return this.showNodes(id, chat, '当前面板插件未提供显隐状态，请升级插件至1.1.0后重新加载节点。');
+        return this.previewVisibility(id, chat, action === 'show');
+      }
       if (action === 'next') {
         if (!s.selected.size) return this.showNodes(id, chat, '请至少选择一个节点。');
         s.stage = 'address';
@@ -116,12 +121,13 @@ export class Bot {
     if (action === 'preset' && s.stage === 'address' && /^\d+$/.test(value ?? '') && this.current(s).presets[Number(value)]) return this.preview(id, chat, this.current(s).presets[Number(value)].host);
     if (action === 'confirm' && s.stage === 'confirm') {
       s.stage = 'done';
-      const nodes = s.nodes.filter(n => s.selected.has(n.id)).map(n => ({ id: n.id, host: n.host }));
+      const visibility = s.kind === 'visibility';
+      const nodes = s.nodes.filter(n => s.selected.has(n.id)).map(n => visibility ? { id: n.id, show: n.show } : { id: n.id, host: n.host });
       let note;
       try {
-        const result = await this.panel('switch', id, { host: s.host, nodes }, s.panelId);
-        note = `已完成：${this.current(s).name} 的 ${result.changes.length} 个节点服务器地址已改为 ${s.host}。`;
-      } catch (error) { note = `未能确认执行结果：${error.message}\n请先通过“节点管理”核查实际地址，再进行下一步。`; }
+        const result = await this.panel(visibility ? 'visibility' : 'switch', id, visibility ? { show: s.show, nodes } : { host: s.host, nodes }, s.panelId);
+        note = visibility ? `已完成：${this.current(s).name} 的 ${result.changes.length} 个节点已${s.show ? '开启（订阅中显示）' : '关闭（订阅中隐藏）'}。客户端更新订阅后可看到变化。` : `已完成：${this.current(s).name} 的 ${result.changes.length} 个节点服务器地址已改为 ${s.host}。`;
+      } catch (error) { note = `未能确认执行结果：${error.message}\n请先通过“节点管理”核查实际${visibility ? '显隐状态' : '地址'}，再进行下一步。`; }
       this.sessions.set(id, this.fresh(s.panelId));
       return this.menu(id, chat, note);
     }
@@ -130,17 +136,18 @@ export class Bot {
   async showNodes(id, chat, note = '') {
     const s = this.sessions.get(id), nodes = this.filtered(s);
     const pages = Math.max(1, Math.ceil(nodes.length / 8));
-    const rows = nodes.slice(s.page * 8, s.page * 8 + 8).map(n => [button(`${s.selected.has(n.id) ? '☑' : '☐'} ${n.id} ${String(n.name).slice(0, 28)} · ${n.host}`.slice(0, 100), `${s.nonce}:toggle:${n.id}`)]);
+    const rows = nodes.slice(s.page * 8, s.page * 8 + 8).map(n => [button(`${s.selected.has(n.id) ? '☑' : '☐'} ${n.id} ${String(n.name).slice(0, 28)} [${typeof n.show === 'boolean' ? n.show ? '开启' : '关闭' : '状态未知'}] · ${n.host}`.slice(0, 100), `${s.nonce}:toggle:${n.id}`)]);
     rows.push([button('上一页', `${s.nonce}:page:${Math.max(0, s.page - 1)}`), button('下一页', `${s.nonce}:page:${Math.min(pages - 1, s.page + 1)}`)]);
     rows.push([button(`${s.query ? '全选搜索结果' : '全选全部节点'}（${nodes.length}个）`, `${s.nonce}:all`), button('清空选择', `${s.nonce}:clear`)]);
-    rows.push([button('搜索节点', `${s.nonce}:search`), ...(s.query ? [button('显示全部节点', `${s.nonce}:reset`)] : [])]);
+    rows.push([button('搜索节点', `${s.nonce}:search`), ...(s.query ? [button('清除搜索', `${s.nonce}:reset`)] : [])]);
     if (s.query) rows.push([button(`全选全部节点（${s.nodes.length}个）`, `${s.nonce}:allnodes`)]);
     rows.push([button(`选择目标地址（已选${s.selected.size}个）`, `${s.nonce}:next`)]);
+    rows.push([button('开启所选（订阅显示）', `${s.nonce}:show`), button('关闭所选（订阅隐藏）', `${s.nonce}:hide`)]);
     rows.push([button('切换面板', `${s.nonce}:panels`), button('返回主菜单', `${s.nonce}:home`)]);
-    return this.send(chat, `${note ? note + '\n\n' : ''}当前面板：${this.current(s).name}\n${s.query ? `名称包含“${s.query}”：${nodes.length} 个匹配节点` : `全部节点：${nodes.length} 个`}\n已选 ${s.selected.size} 个 · 第 ${s.page + 1}/${pages} 页\n可一键全选，或逐个勾选/取消。`, rows);
+    return this.send(chat, `${note ? note + '\n\n' : ''}当前面板：${this.current(s).name}\n${s.query ? `名称包含“${s.query}”：${nodes.length} 个匹配节点` : `全部节点：${nodes.length} 个`}\n已选 ${s.selected.size} 个 · 第 ${s.page + 1}/${pages} 页\n勾选或全选后，可切换地址或开启/关闭订阅显示。`, rows);
   }
   async preview(id, chat, host) {
-    const s = this.sessions.get(id); s.host = host; s.stage = 'confirm';
+    const s = this.sessions.get(id); s.host = host; s.kind = 'address'; s.stage = 'confirm';
     const selected = s.nodes.filter(n => s.selected.has(n.id));
     let chunk = `当前面板：${this.current(s).name}\n即将修改 ${selected.length} 个节点，仅更改服务器地址：\n新地址：${host}\n`;
     for (const n of selected) {
@@ -150,5 +157,18 @@ export class Bot {
     }
     if (chunk) await this.send(chat, chunk);
     return this.send(chat, `确认替换“${this.current(s).name}”的 ${selected.length} 个节点？`, [[button('确认替换', `${s.nonce}:confirm`)], [button('返回节点', `${s.nonce}:back`), button('返回主菜单', `${s.nonce}:home`)]]);
+  }
+  async previewVisibility(id, chat, show) {
+    const s = this.sessions.get(id); s.show = show; s.kind = 'visibility'; s.stage = 'confirm'; delete s.host;
+    const selected = s.nodes.filter(n => s.selected.has(n.id));
+    const target = show ? '开启（订阅中显示）' : '关闭（订阅中隐藏）';
+    let chunk = `当前面板：${this.current(s).name}\n将 ${selected.length} 个节点设为${target}。仅修改订阅显隐。\n`;
+    for (const n of selected) {
+      const line = `\n#${n.id} ${String(n.name).slice(0, 80)}\n${n.show ? '开启' : '关闭'} → ${show ? '开启' : '关闭'}\n`;
+      if (chunk.length + line.length > 3500) { await this.send(chat, chunk); chunk = ''; }
+      chunk += line;
+    }
+    if (chunk) await this.send(chat, chunk);
+    return this.send(chat, `确认${show ? '开启' : '关闭'}“${this.current(s).name}”的 ${selected.length} 个节点？`, [[button(show ? '确认开启' : '确认关闭', `${s.nonce}:confirm`)], [button('返回节点', `${s.nonce}:back`), button('返回主菜单', `${s.nonce}:home`)]]);
   }
 }

@@ -1,8 +1,8 @@
 {
   "name": "TG 节点地址切换",
   "code": "node_address_switch",
-  "version": "1.0.0",
-  "description": "通过独立 Telegram 机器人批量修改选中节点的服务器地址",
+  "version": "1.1.0",
+  "description": "通过网页或 Telegram 批量修改节点地址、开启或关闭订阅显示",
   "author": "NodeAddressSwitch",
   "type": "feature",
   "config": {

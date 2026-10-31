@@ -39,7 +39,7 @@ export class BotRuntime {
         const me = await telegram('getMe', {});
         const webhook = await telegram('getWebhookInfo', {});
         if (webhook.url) throw new Error('该机器人已有 webhook，请更换专用机器人或先移除旧 webhook');
-        await telegram('setMyCommands', { commands: [{ command: 'start', description: '主菜单' }, { command: 'panels', description: '切换面板' }, { command: 'nodes', description: '当前面板节点' }, { command: 'cancel', description: '取消操作' }] });
+        await telegram('setMyCommands', { commands: [{ command: 'start', description: '主菜单' }, { command: 'panels', description: '切换面板' }, { command: 'nodes', description: '当前面板节点' }, { command: 'visibility', description: '节点订阅开关' }, { command: 'cancel', description: '取消操作' }] });
         const initial = await telegram('getUpdates', { offset: -1, timeout: 0, allowed_updates: ['message', 'callback_query'] });
         let offset = initial.length ? initial.at(-1).update_id + 1 : 0;
         const bot = new Bot(config, telegram, panel);

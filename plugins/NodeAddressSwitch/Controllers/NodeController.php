@@ -24,7 +24,41 @@ class NodeController extends PluginController
     public function nodes(Request $request)
     {
         $this->authorizeBot($request);
-        return response()->json(['data' => Server::query()->orderBy('id')->get(['id', 'name', 'type', 'host'])]);
+        return response()->json(['data' => Server::query()->orderBy('id')->get(['id', 'name', 'type', 'host', 'show'])]);
+    }
+
+    public function switchVisibility(Request $request)
+    {
+        $actor = $this->authorizeBot($request);
+        $data = $request->validate([
+            'show' => ['required', 'boolean'],
+            'nodes' => ['required', 'array', 'min:1', 'max:100'],
+            'nodes.*.id' => ['required', 'integer', 'min:1', 'distinct'],
+            'nodes.*.show' => ['required', 'boolean'],
+        ]);
+        abort_unless(is_bool($data['show']), 422, '显隐状态必须是布尔值');
+        foreach ($data['nodes'] as $node) {
+            abort_unless(is_bool($node['show']), 422, '原显隐状态必须是布尔值');
+        }
+        $show = $data['show'];
+        $changes = DB::transaction(function () use ($data, $show, $actor) {
+            $expected = collect($data['nodes'])->keyBy('id');
+            $nodes = Server::query()->whereIn('id', $expected->keys())->orderBy('id')->lockForUpdate()->get();
+            abort_unless($nodes->count() === $expected->count(), 409, '节点已删除，请重新选择');
+            foreach ($nodes as $node) {
+                abort_unless((bool) $node->show === $expected[$node->id]['show'], 409, '节点显隐状态已改变，请重新选择');
+            }
+            $changes = [];
+            foreach ($nodes as $node) {
+                $changes[] = ['id' => $node->id, 'name' => $node->name, 'before' => (bool) $node->show, 'after' => $show];
+                // 只控制订阅显隐，不修改 host、enabled、端口或协议设置。
+                $node->show = $show;
+                $node->saveOrFail();
+            }
+            Log::info('node_visibility_switch', ['actor' => $actor, 'changes' => $changes]);
+            return $changes;
+        });
+        return response()->json(['data' => ['changes' => $changes]]);
     }
 
     public function switchHosts(Request $request)

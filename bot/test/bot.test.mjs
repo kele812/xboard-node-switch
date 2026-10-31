@@ -6,7 +6,7 @@ import { validHost, loadConfig } from '../src/config.mjs';
 function setup(options = {}) {
   const sent = [], writes = [], calls = [];
   let clock = 0;
-  const nodes = options.nodes || Array.from({ length: 12 }, (_, i) => ({ id: i + 1, name: `节点${i + 1}`, host: `old${i + 1}.example.com`, type: 'vless' }));
+  const nodes = options.nodes || Array.from({ length: 12 }, (_, i) => ({ id: i + 1, name: `节点${i + 1}`, host: `old${i + 1}.example.com`, type: 'vless', show: i % 2 === 0 }));
   const bot = new Bot({ allowed: new Set(['123', '456']), presets: [{ name: '备用', host: 'new.example.com' }], ...options.config }, async (method, data) => { sent.push({ method, ...data }); }, async (action, actor, data, panelId) => {
     calls.push({ action, actor, data, panelId });
     if (action === 'nodes') return nodes;
@@ -155,4 +155,48 @@ test('不同 TG 用户的当前面板互不影响', async () => {
   await x.bot.handle({ message: { from: { id: 456 }, chat: { id: 456, type: 'private' }, text: '/start' } });
   await x.message('/panels'); await x.action('panel', 'b');
   assert.equal(x.bot.sessions.get('123').panelId, 'b'); assert.equal(x.bot.sessions.get('456').panelId, 'a');
+});
+
+test('TG节点开关菜单支持批量关闭和单个开启，确认前不写且不修改host', async () => {
+  const x = setup(); await x.message('节点开关'); await x.action('all'); await x.action('hide');
+  assert.equal(x.writes.length, 0); assert.equal(x.bot.sessions.get('123').kind, 'visibility');
+  assert.ok(x.sent.at(-1).text.includes('确认关闭'));
+  const confirm = `${x.bot.sessions.get('123').nonce}:confirm`;
+  await x.click(confirm); await x.click(confirm);
+  assert.equal(x.writes.length, 1); assert.equal(x.calls.find(c => c.action === 'visibility').panelId, 'default');
+  assert.equal(x.writes[0].show, false); assert.equal(x.writes[0].host, undefined);
+  assert.ok(x.writes[0].nodes.every(n => typeof n.show === 'boolean' && n.host === undefined));
+  assert.ok(x.sent.some(m => m.text?.includes('订阅中隐藏')));
+  await x.message('/visibility'); await x.action('toggle', 2); await x.action('show'); await x.action('confirm');
+  assert.deepEqual(x.writes[1], { actor: '123', show: true, nodes: [{ id: 2, show: false }] });
+});
+
+test('TG搜索AA后一次关闭40个匹配节点，可返回改地址而不混用操作', async () => {
+  const nodes = Array.from({ length: 50 }, (_, i) => ({ id: i + 1, name: `${i < 40 ? 'AA' : 'BB'}-${i}`, host: 'old.example.com', show: true }));
+  const x = setup({ nodes }); await x.message('搜索节点'); await x.message('aa'); await x.action('all'); await x.action('hide');
+  await x.action('back'); await x.action('next'); await x.action('preset', 0); await x.action('confirm');
+  assert.equal(x.calls.find(c => c.action === 'switch').data.host, 'new.example.com');
+  assert.equal(x.writes[0].show, undefined);
+  await x.message('搜索节点'); await x.message('AA'); await x.action('all'); await x.action('hide'); await x.action('confirm');
+  assert.equal(x.writes[1].nodes.length, 40); assert.ok(x.writes[1].nodes.every(n => n.id <= 40));
+});
+
+test('TG空选择、未知显隐状态和切换面板后旧确认均不能写入', async () => {
+  const x = setup({ config: { panels: [{ id: 'a', name: 'A', presets: [] }, { id: 'b', name: 'B', presets: [] }] } });
+  await x.message('/nodes'); await x.action('hide'); assert.equal(x.bot.sessions.get('123').stage, 'select');
+  await x.action('toggle', 1); await x.action('hide'); const old = `${x.bot.sessions.get('123').nonce}:confirm`;
+  await x.message('切换面板'); await x.action('panel', 'b'); await x.click(old); assert.equal(x.writes.length, 0);
+  const legacy = setup({ nodes: [{ id: 1, name: '旧插件', host: 'a.example.com' }] });
+  await legacy.message('/nodes'); await legacy.action('all'); await legacy.action('show');
+  assert.match(legacy.sent.at(-1).text, /升级插件/); assert.equal(legacy.writes.length, 0);
+});
+
+test('TG显隐写入超时不自动重试，并提示核查实际显隐状态', async () => {
+  const x = setup(); let attempts = 0;
+  const original = x.bot.panel;
+  x.bot.panel = async (...args) => { if (args[0] === 'visibility') { attempts++; throw new Error('超时'); } return original(...args); };
+  await x.message('/visibility'); await x.action('all'); await x.action('hide');
+  const confirm = `${x.bot.sessions.get('123').nonce}:confirm`;
+  await x.click(confirm); await x.click(confirm);
+  assert.equal(attempts, 1); assert.ok(x.sent.some(m => m.text?.includes('核查实际显隐状态')));
 });

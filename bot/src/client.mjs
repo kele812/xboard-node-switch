@@ -29,7 +29,8 @@ export function createClients(config, fetcher = fetch, signal) {
       if (!data || !('data' in data)) throw new Error('面板返回格式错误');
       if (action === 'nodes') {
         if (!Array.isArray(data.data) || data.data.some(n => !Number.isSafeInteger(n.id) || n.id < 1 || typeof n.name !== 'string' || typeof n.host !== 'string' || n.host.length > 253)) throw new Error('节点列表格式错误');
-        return data.data.map(({ id, name, type, host }) => ({ id, name, type: String(type ?? ''), host }));
+        // 老插件不返回 show 时标为未知，不能猜测为关闭。
+        return data.data.map(({ id, name, type, host, show }) => ({ id, name, type: String(type ?? ''), host, show: typeof show === 'boolean' ? show : null }));
       }
       if (!Array.isArray(data.data.changes)) throw new Error('切换结果格式错误，请重新读取节点核实');
       return data.data;

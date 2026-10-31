@@ -15,16 +15,25 @@ async function fixture(t) {
   const root = resolve(fileURLToPath(new URL('../../.qa/test-data/', import.meta.url)));
   await mkdir(root, { recursive: true });
   const directory = await mkdtemp(join(root, 'node-switch-test-'));
-  const nodes = [{ id: 1, name: '<img src=x onerror=alert(1)>', host: 'one.example.com', type: 'vless' }, { id: 2, name: '节点二', host: 'two.example.com', type: 'trojan' }];
+  const nodes = [{ id: 1, name: '<img src=x onerror=alert(1)>', host: 'one.example.com', type: 'vless', show: true, enabled: true, port: 443 }, { id: 2, name: '节点二', host: 'two.example.com', type: 'trojan', show: false, enabled: true, port: 8443 }];
   const writes = [], configured = [], requests = [];
+  const visibility = new Map();
+  const currentShow = (panelId, n) => visibility.has(`${panelId}:${n.id}`) ? visibility.get(`${panelId}:${n.id}`) : n.show;
   let failWrite = false;
   const clientFactory = config => ({
     telegram: async () => ({ username: 'test_bot' }),
     panel: async (action, actor, data) => {
       requests.push({ action, actor, url: config.url, key: config.key, panelId: config.id });
-      if (action === 'nodes') return structuredClone(nodes).map(n => ({ ...n, host: config.id === 'b' ? `b-${n.host}` : n.host }));
+      if (action === 'nodes') return structuredClone(nodes).map(n => ({ ...n, show: currentShow(config.id, n), host: config.id === 'b' ? `b-${n.host}` : n.host }));
       writes.push({ actor, data });
       if (failWrite) throw new Error('面板连接失败或超时');
+      if (action === 'visibility') {
+        const selected = data.nodes.map(n => ({ expected: n, current: nodes.find(x => x.id === n.id) }));
+        if (selected.some(({ expected, current }) => !current || currentShow(config.id, current) !== expected.show)) throw new Error('面板请求失败（HTTP 409）：节点状态已改变');
+        const changes = selected.map(({ current }) => ({ id: current.id, before: currentShow(config.id, current), after: data.show }));
+        selected.forEach(({ current }) => visibility.set(`${config.id}:${current.id}`, data.show));
+        return { changes };
+      }
       return { changes: data.nodes.map(n => ({ id: n.id, before: n.host, after: data.host })) };
     },
   });
@@ -45,7 +54,7 @@ async function fixture(t) {
   };
   const setup = async (username = 'admin', initialPassword = password) => { const result = await request('setup', { code: app.store.value.setupCode, username, password: initialPassword }); assert.equal(result.status, 200); csrf = result.data.csrf; return result; };
   t.after(async () => { await app.close(); assert.equal(dirname(resolve(directory)), root); await rm(directory, { recursive: true, force: true }); });
-  return { app, request, setup, directory, nodes, writes, requests, origin, configured, setCsrf: value => { csrf = value; }, failWrite: () => { failWrite = true; } };
+  return { app, request, setup, directory, nodes, writes, requests, origin, configured, setCsrf: value => { csrf = value; }, failWrite: () => { failWrite = true; }, setShow: (panelId, id, show) => visibility.set(`${panelId}:${id}`, show) };
 }
 
 test('初始化、登录、敏感配置与持久化', async t => {
@@ -223,4 +232,65 @@ test('旧版数据升级保留原密码和所有连接字段，默认账号admin
   assert.equal(JSON.parse(backup).admin.hash, originalHash);
   await new StateStore(x.directory).open();
   assert.equal(await readFile(join(x.directory, 'state-v1-backup.json'), 'utf8'), backup);
+});
+
+test('批量关闭与单个开启先预览再确认，只提交show且不改地址、端口和enabled', async t => {
+  const x = await fixture(t); await x.setup(); await x.request('config', settings); await x.request('nodes');
+  const original = structuredClone(x.nodes);
+  const preview = await x.request('preview', { kind: 'visibility', ids: [1, 2], show: false });
+  assert.equal(preview.status, 200); assert.equal(x.writes.length, 0);
+  assert.equal(preview.data.show, false); assert.equal(preview.data.kind, 'visibility'); assert.equal(preview.data.host, undefined);
+  assert.equal((await x.request('switch', { token: preview.data.token, kind: 'address', host: 'ignored.example.com' })).status, 200);
+  assert.deepEqual(x.writes[0].data, { show: false, nodes: [{ id: 1, show: true }, { id: 2, show: false }] });
+  assert.equal(x.requests.find(r => r.action === 'visibility').url, panel.url);
+  const fresh = await x.request('nodes'); assert.ok(fresh.data.every(n => n.show === false));
+  for (let i = 0; i < original.length; i++) for (const field of ['host', 'port', 'enabled']) assert.equal(fresh.data[i][field], original[i][field]);
+  const one = await x.request('preview', { kind: 'visibility', ids: [2], show: true });
+  await x.request('switch', { token: one.data.token });
+  const final = await x.request('nodes'); assert.equal(final.data[0].show, false); assert.equal(final.data[1].show, true);
+  const audit = await x.request('audit'); assert.equal(audit.data[0].kind, 'visibility'); assert.equal(audit.data[0].show, true);
+});
+
+test('显隐状态冲突时整批拒绝且不重试，旧确认不能重复执行', async t => {
+  const x = await fixture(t); await x.setup(); await x.request('config', settings); await x.request('nodes');
+  const preview = await x.request('preview', { kind: 'visibility', ids: [1, 2], show: true });
+  x.setShow('a', 1, false);
+  const result = await x.request('switch', { token: preview.data.token });
+  assert.equal(result.status, 502); assert.match(result.data.error, /409/);
+  assert.equal((await x.request('switch', { token: preview.data.token })).status, 409);
+  const fresh = await x.request('nodes'); assert.ok(fresh.data.every(n => n.show === false));
+  assert.equal(x.writes.length, 1); assert.equal((await x.request('audit')).data[0].state, 'unknown');
+});
+
+test('显隐预览严格要求布尔值、已知状态和有效选择；旧插件仍可改地址', async t => {
+  const x = await fixture(t); await x.setup(); await x.request('config', settings); await x.request('nodes');
+  for (const show of [undefined, 0, 1, 'false', 'true', null]) assert.equal((await x.request('preview', { kind: 'visibility', ids: [1], show })).status, 400);
+  for (const ids of [[], [1, 1], [999]]) assert.equal((await x.request('preview', { kind: 'visibility', ids, show: false })).status, 400);
+  assert.equal((await x.request('preview', { kind: 'invalid', ids: [1], show: true })).status, 400);
+  delete x.nodes[0].show; await x.request('nodes');
+  const unsupported = await x.request('preview', { kind: 'visibility', ids: [1], show: false });
+  assert.equal(unsupported.status, 409); assert.match(unsupported.data.error, /升级插件/);
+  assert.equal((await x.request('preview', { ids: [1], host: 'new.example.com' })).status, 200);
+  assert.equal(x.writes.length, 0);
+});
+
+test('显隐确认绑定当前面板和一次性令牌，不会串到同ID的其他面板', async t => {
+  const x = await fixture(t); await x.setup();
+  const b = { ...panel, id: 'b', name: 'B', url: 'https://b.example.com', key: 'b'.repeat(64) };
+  await x.request('config', { ...settings, panels: [panel, b] }); await x.request('nodes');
+  const old = await x.request('preview', { kind: 'visibility', ids: [1], show: false });
+  await x.request('panel', { panelId: 'b' });
+  assert.equal((await x.request('switch', { token: old.data.token })).status, 409);
+  await x.request('nodes'); const preview = await x.request('preview', { kind: 'visibility', ids: [1], show: false });
+  const replies = await Promise.all([x.request('switch', { token: preview.data.token }), x.request('switch', { token: preview.data.token })]);
+  assert.deepEqual(replies.map(r => r.status).sort(), [200, 409]);
+  assert.equal(x.requests.find(r => r.action === 'visibility').url, b.url);
+  await x.request('panel', { panelId: 'a' }); assert.equal((await x.request('nodes')).data[0].show, true);
+  assert.equal((await x.request('audit')).data[0].panelId, 'b');
+});
+
+test('客户端保留false状态，老插件缺少show时标记未知', async () => {
+  const nodes = [{ id: 1, name: '开启', host: 'a.com', show: true }, { id: 2, name: '关闭', host: 'b.com', show: false }, { id: 3, name: '旧插件', host: 'c.com' }];
+  const clients = createClients({ ...panel, token: settings.token }, async () => new Response(JSON.stringify({ data: nodes })));
+  assert.deepEqual((await clients.panel('nodes', '123')).map(n => n.show), [true, false, null]);
 });

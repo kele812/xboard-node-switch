@@ -186,13 +186,17 @@ export async function createWebApp({ directory, secureCookie = false, clientFact
         const data = await bodyJson(req);
         const snapshot = session.snapshot;
         if (!snapshot || snapshot.panelId !== panel.id || snapshot.revision !== store.value.revision || Date.now() - snapshot.time > 15 * 60_000) fail(409, '节点列表已过期，请重新加载');
-        if (!validHost(data.host)) fail(400, '请输入有效域名或 IP，不带协议、端口和路径');
+        const kind = data.kind ?? 'address';
+        if (!['address', 'visibility'].includes(kind)) fail(400, '操作类型无效');
+        if (kind === 'address' && !validHost(data.host)) fail(400, '请输入有效域名或 IP，不带协议、端口和路径');
+        if (kind === 'visibility' && typeof data.show !== 'boolean') fail(400, '显隐状态必须是布尔值');
         if (!Array.isArray(data.ids) || data.ids.length < 1 || data.ids.length > 100 || data.ids.some(id => !Number.isSafeInteger(id)) || new Set(data.ids).size !== data.ids.length) fail(400, '请勾选 1–100 个不同节点');
         const nodes = data.ids.map(id => snapshot.nodes.find(node => node.id === id));
         if (nodes.some(node => !node)) fail(400, '所选节点不在已读取列表中');
-        const pending = { token: randomToken(), panelId: panel.id, panelName: panel.name, host: data.host, nodes, revision: store.value.revision, expires: Date.now() + 5 * 60_000 };
+        if (kind === 'visibility' && nodes.some(n => typeof n.show !== 'boolean')) fail(409, '当前面板插件未提供显隐状态，请升级插件至 1.1.0 后重新加载节点');
+        const pending = { token: randomToken(), kind, panelId: panel.id, panelName: panel.name, ...(kind === 'visibility' ? { show: data.show } : { host: data.host }), nodes, revision: store.value.revision, expires: Date.now() + 5 * 60_000 };
         session.pending = pending;
-        return responseJson(res, 200, { token: pending.token, panelName: panel.name, host: pending.host, nodes: pending.nodes });
+        return responseJson(res, 200, { token: pending.token, kind, panelName: panel.name, ...(kind === 'visibility' ? { show: pending.show } : { host: pending.host }), nodes: pending.nodes });
       }
       if (path === '/api/switch' && req.method === 'POST') {
         const data = await bodyJson(req);
@@ -200,18 +204,21 @@ export async function createWebApp({ directory, secureCookie = false, clientFact
         if (!pending || pending.panelId !== panel.id || !equal(data.token, pending.token) || pending.expires < Date.now() || pending.revision !== store.value.revision) fail(409, '确认已失效，请重新选择并预览');
         delete session.pending;
         delete session.snapshot;
-        const record = { id: randomToken(), panelId: panel.id, panelName: panel.name, at: new Date().toISOString(), actor: panel.webUserId, state: 'pending', host: pending.host, changes: pending.nodes.map(n => ({ id: n.id, name: n.name, before: n.host, after: pending.host })) };
+        const visibility = pending.kind === 'visibility';
+        const record = { id: randomToken(), kind: pending.kind, panelId: panel.id, panelName: panel.name, at: new Date().toISOString(), actor: panel.webUserId, state: 'pending', ...(visibility ? { show: pending.show } : { host: pending.host }), changes: pending.nodes.map(n => ({ id: n.id, name: n.name, before: visibility ? n.show : n.host, after: visibility ? pending.show : pending.host })) };
         // 先持久记录，再向面板写入；崩溃遗留 pending 应按结果未知核查。
         await store.transact(state => { state.audit.unshift(record); state.audit = state.audit.slice(0, 100); });
         let result;
         try {
-          result = await callPanel(settings, panel, 'switch', { host: pending.host, nodes: pending.nodes.map(n => ({ id: n.id, host: n.host })) });
+          result = visibility
+            ? await callPanel(settings, panel, 'visibility', { show: pending.show, nodes: pending.nodes.map(n => ({ id: n.id, show: n.show })) })
+            : await callPanel(settings, panel, 'switch', { host: pending.host, nodes: pending.nodes.map(n => ({ id: n.id, host: n.host })) });
         } catch (error) {
           await store.transact(state => { const entry = state.audit.find(a => a.id === record.id); if (entry) { entry.state = 'unknown'; entry.message = error.message; } });
           fail(502, `${error.message}。执行结果需核查，请重新加载节点；不要直接重复提交。`);
         }
         await store.transact(state => { const entry = state.audit.find(a => a.id === record.id); if (entry) entry.state = 'success'; });
-        return responseJson(res, 200, result);
+        return responseJson(res, 200, { ...result, kind: pending.kind });
       }
       fail(404, '接口不存在');
     } catch (error) {
